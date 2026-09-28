@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Novamesh — админ</title>
+<style>
+:root{--ink:#0E1116;--panel:#151A21;--panel2:#1C222B;--line:#262E38;--text:#E9EDF2;--muted:#8B96A5;--blue:#0A84FF;--mint:#3DDC97;--gold:#E3B341;--red:#F0665B}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--text);font-family:-apple-system,system-ui,sans-serif;padding:16px 16px 60px;max-width:640px;margin:0 auto}
+h1{font-size:20px;margin:6px 0 14px}
+h2{font-size:13px;color:var(--muted);margin:24px 0 10px;letter-spacing:.03em}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.t{font-weight:700;font-size:14px}.m{color:var(--muted);font-size:12px;margin-top:3px;word-break:break-all}
+.sum{font-weight:800;font-size:15px;margin-top:8px}
+.btn{border:none;border-radius:999px;padding:11px 16px;font-weight:700;font-size:13px;cursor:pointer;background:var(--blue);color:#fff;margin-top:10px;width:100%}
+.btn.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+.badge{font-size:11px;font-weight:700;padding:4px 9px;border-radius:20px;background:#3A2E14;color:var(--gold);white-space:nowrap}
+input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px;color:var(--text);font-size:15px}
+.empty{color:var(--muted);text-align:center;padding:22px;font-size:13px}
+.bal{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.bal span{background:var(--panel2);border-radius:8px;padding:4px 8px;font-size:12px}
+.top{display:flex;justify-content:space-between;align-items:center}
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>Админ-панель</h1>
+  <input id="secret" type="password" placeholder="ADMIN_SECRET из .env">
+  <button class="btn" onclick="login()">Войти</button>
+  <div id="err" class="empty"></div>
+</div>
+
+<div id="app" style="display:none">
+  <div class="top"><h1>Панель обработки</h1><button class="btn ghost" style="width:auto;margin:0" onclick="load()">Обновить</button></div>
+  <h2>ЗАЯВКИ: ПОПОЛНЕНИЯ, ВЫВОДЫ, ОБМЕН НА КАРТУ</h2><div id="requests"></div>
+  <h2>СДЕЛКИ В РАБОТЕ</h2><div id="deals"></div>
+  <h2>ПОЛЬЗОВАТЕЛИ</h2><div id="users"></div>
+</div>
+
+<script>
+const STEPS = ['Создана','Покупатель','Оплачена','В эскроу','Получена'];
+const TYPES = {deposit:'Пополнение', withdraw:'Вывод', convert:'Обмен на карту'};
+let SECRET = sessionStorage.getItem('adm') || '';
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, method, body){
+  const r = await fetch(path, {method: method || 'GET', headers: {'Content-Type':'application/json','X-Admin-Secret':SECRET}, body: body ? JSON.stringify(body) : undefined});
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+async function login(){
+  SECRET = document.getElementById('secret').value.trim();
+  try{ await api('/api/admin/users'); sessionStorage.setItem('adm', SECRET); start(); }
+  catch(e){ document.getElementById('err').textContent = 'Неверный пароль'; }
+}
+function start(){
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  load();
+}
+async function load(){
+  try{
+    const [reqs, deals, users] = await Promise.all([api('/api/admin/requests'), api('/api/admin/deals'), api('/api/admin/users')]);
+    const uname = id => { const u = users.find(x => x.id === id); return u ? (u.username ? '@'+u.username : u.firstName) : id; };
+
+    document.getElementById('requests').innerHTML = reqs.length ? reqs.map(t => {
+      const amount = t.type==='convert' ? `${t.fromAmount} ${t.fromCurrency} → ${t.amount.toLocaleString('ru-RU')} ₽` : `${t.amount} ${t.currency}`;
+      const label = t.type==='deposit' ? 'Зачислить на баланс' : 'Отметить выплаченным';
+      return `<div class="card"><div class="row"><div><div class="t">${TYPES[t.type]||t.type} · ${esc(uname(t.userId))}</div>
+        <div class="m">${esc(t.dest ? 'Реквизиты: '+t.dest : '')}</div></div><span class="badge">Ожидание</span></div>
+        <div class="sum">${esc(amount)}</div>
+        <button class="btn" onclick="confirmReq('${t.id}')">${label}</button></div>`;
+    }).join('') : '<div class="empty">Заявок нет</div>';
+
+    document.getElementById('deals').innerHTML = deals.length ? deals.map(d => {
+      const next = Math.min(5, d.step + 1);
+      return `<div class="card"><div class="row"><div><div class="t">#${d.id} · ${esc(d.item)}</div>
+        <div class="m">Продавец ${esc(d.sellerUsername)} · Покупатель ${esc(d.buyerUsername)}</div></div>
+        <span class="badge">Шаг ${d.step}/5</span></div>
+        <div class="sum">${d.price.toLocaleString('ru-RU')} ${d.currency}</div>
+        <div class="m">Сейчас: ${STEPS[d.step-1]}</div>
+        <button class="btn" onclick="setStep('${d.id}',${next})">→ ${STEPS[next-1]}${next===3?' (подтвердить оплату)':next===5?' (завершить, зачислить продавцу)':''}</button></div>`;
+    }).join('') : '<div class="empty">Активных сделок нет</div>';
+
+    document.getElementById('users').innerHTML = users.length ? users.map(u => `<div class="card">
+      <div class="t">${esc(u.firstName)} ${u.username ? '@'+esc(u.username) : ''}</div><div class="m">ID ${u.id} · оборот $${u.turnoverUsd}</div>
+      <div class="bal">${Object.entries(u.balances).map(([c,v]) => `<span onclick="editBal('${u.id}','${c}',${v})" style="cursor:pointer">${c}: ${v}</span>`).join('')}</div>
+      <div class="m" style="margin-top:6px">Нажмите на баланс, чтобы изменить</div></div>`).join('') : '<div class="empty">Пока никто не заходил</div>';
+  }catch(e){
+    sessionStorage.removeItem('adm');
+    location.reload();
+  }
+}
+async function confirmReq(id){ if(confirm('Подтвердить? Убедитесь, что деньги реально получены/отправлены.')){ await api('/api/admin/requests/'+id+'/confirm','POST'); load(); } }
+async function setStep(id, step){ await api('/api/admin/deals/'+id+'/step','POST',{step}); load(); }
+async function editBal(id, cur, val){
+  const v = prompt('Новый баланс '+cur, val);
+  if(v === null || isNaN(v)) return;
+  await api('/api/admin/users/'+id+'/balance','POST',{currency:cur,value:Number(v)}); load();
+}
+if(SECRET){ api('/api/admin/users').then(start).catch(() => sessionStorage.removeItem('adm')); }
+</script>
+</body>
+</html>
